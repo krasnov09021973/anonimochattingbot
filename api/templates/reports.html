@@ -1,0 +1,188 @@
+<div style="display: flex; gap: 20px;">
+    <!-- Левая панель: список жалоб -->
+    <div style="flex: 1;">
+        <h3>⚠️ Список жалоб</h3>
+        <div style="margin-bottom: 10px;">
+            <button onclick="ReportsModule.loadReports('all')">📋 Все</button>
+            <button onclick="ReportsModule.loadReports('pending')">⏳ В ожидании (<span id="pending_count">0</span>)</button>
+            <button onclick="ReportsModule.loadReports('confirm')">✅ Подтверждённые</button>
+            <button onclick="ReportsModule.loadReports('reject')">❌ Отклонённые</button>
+            <button onclick="ReportsModule.refresh()">🔄 Обновить</button>
+            <span style="margin-left: 20px;">
+                🔍 <input type="text" id="search_reports" placeholder="Search by ID or reason" style="padding: 5px;">
+                <button onclick="ReportsModule.searchReports()">Поиск</button>
+            </span>
+        </div>
+        <div id="reports_list" style="max-height: 500px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px;"></div>
+        <div id="reports_pagination" style="margin-top: 10px;"></div>
+    </div>
+    
+    <!-- Правая панель: детали жалобы -->
+    <div id="report_details" style="flex: 1; border-left: 1px solid #ddd; padding-left: 20px;">
+        <h3>📋 Детали жалобы</h3>
+        <div id="report_info">Выберите жалобу из списка</div>
+    </div>
+</div>
+
+<script>
+window.ReportsModule = (function() {
+    let currentPage = 1;
+    let currentStatus = 'all';
+    let currentSearch = '';
+    let currentReport = null;
+    let sortField = 'created_at';
+    let sortOrder = 'DESC';
+    
+    async function loadReports(status = 'all', page = 1, search = '') {
+        currentStatus = status;
+        currentPage = page;
+        currentSearch = search;
+        
+        const url = `/api/reports/${status}?page=${page}&limit=20&search=${encodeURIComponent(search)}&sort=${sortField}&order=${sortOrder}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        let html = '<table style="width: 100%;">';
+        html += `<thead><tr>
+            <th onclick="ReportsModule.sortBy('report_id')">ID ${sortField === 'report_id' ? (sortOrder === 'DESC' ? '⬇' : '⬆') : '⬍'}</th>
+            <th onclick="ReportsModule.sortBy('reporter_id')">От кого</th>
+            <th onclick="ReportsModule.sortBy('reported_id')">На кого</th>
+            <th onclick="ReportsModule.sortBy('reason')">Причина</th>
+            <th onclick="ReportsModule.sortBy('status')">Статус</th>
+            <th onclick="ReportsModule.sortBy('created_at')">Дата</th>
+        </tr></thead><tbody>`;
+        
+        for (let r of data.reports) {
+            const isSelected = currentReport && currentReport.report_id === r.report_id;
+            let statusColor = '';
+            let statusText = '';
+            if (r.status === 'pending') {
+                statusColor = '#fff3cd';
+                statusText = '⏳ В ожидании';
+            } else if (r.status === 'confirm') {
+                statusColor = '#d4edda';
+                statusText = '✅ Подтверждена';
+            } else {
+                statusColor = '#f8d7da';
+                statusText = '❌ Отклонена';
+            }
+            
+            html += `<tr style="background: ${isSelected ? '#e3f2fd' : statusColor}; cursor: pointer;" onclick="ReportsModule.selectReport(${r.report_id})">
+                <td>${r.report_id}</td>
+                <td><a href="#" onclick="UsersModule.selectUser(${r.reporter_id}); return false;">${r.reporter_id}</a></td>
+                <td><a href="#" onclick="UsersModule.selectUser(${r.reported_id}); return false;">${r.reported_id}</a></td>
+                <td>${r.reason}</td>
+                <td>${statusText}</td>
+                <td>${r.created_at}</td>
+            </tr>`;
+        }
+        html += '</tbody></table>';
+        document.getElementById('reports_list').innerHTML = html;
+        
+        // Обновляем счётчик ожидающих
+        if (status === 'pending') {
+            document.getElementById('pending_count').innerText = data.total || 0;
+        }
+        
+        // Пагинация
+        let paginationHtml = '<div style="display: flex; gap: 5px; justify-content: center; margin-top: 10px;">';
+        for (let i = 1; i <= data.total_pages; i++) {
+            paginationHtml += `<button onclick="ReportsModule.loadReports('${status}', ${i}, '${search}')" style="padding: 5px 10px; background: ${i === page ? '#007bff' : '#f0f0f0'}; color: ${i === page ? 'white' : 'black'}">${i}</button>`;
+        }
+        paginationHtml += '</div>';
+        document.getElementById('reports_pagination').innerHTML = paginationHtml;
+    }
+    
+    async function selectReport(reportId) {
+        const response = await fetch(`/api/report/${reportId}`);
+        const r = await response.json();
+        currentReport = r;
+
+        // Загружаем данные о пользователях
+        const [reporter, reported] = await Promise.all([
+            fetch(`/api/user/${r.reporter_id}`).then(res => res.json()),
+            fetch(`/api/user/${r.reported_id}`).then(res => res.json())
+        ]);
+
+        let statusText = '';
+        if (r.status === 'pending') statusText = '⏳ В ожидании';
+        else if (r.status === 'confirm') statusText = '✅ Подтверждена';
+        else statusText = '❌ Отклонена';
+
+        document.getElementById('report_info').innerHTML = `
+            <p><b>ID жалобы:</b> ${r.report_id}</p>
+            <p><b>Причина:</b> ${r.reason}</p>
+            <p><b>Статус:</b> ${statusText}</p>
+            <p><b>Создана:</b> ${r.created_at}</p>
+            ${r.resolved_at ? `<p><b>Решена:</b> ${r.resolved_at}</p>` : ''}
+            ${r.admin_notes ? `<p><b>Заметки админа:</b> ${r.admin_notes}</p>` : ''}
+
+            <h4 style="margin-top: 20px;">👤 Жалобщик</h4>
+            <p><b>ID:</b> ${reporter.user_id}</p>
+            <p><b>Telegram:</b> ${reporter.username || '❌ нет'}</p>
+            <p><b>Chat name:</b> ${reporter.chat_name || '❌ не задано'}</p>
+            <p><b>Репутация:</b> ${reporter.reputation}/100</p>
+            <p><b>Чатов:</b> ${reporter.chats_count}</p>
+
+            <h4>👤 Нарушитель</h4>
+            <p><b>ID:</b> ${reported.user_id}</p>
+            <p><b>Telegram:</b> ${reported.username || '❌ нет'}</p>
+            <p><b>Chat name:</b> ${reported.chat_name || '❌ не задано'}</p>
+            <p><b>Репутация:</b> ${reported.reputation}/100</p>
+            <p><b>Чатов:</b> ${reported.chats_count}</p>
+            <p><b>Забанен:</b> ${reported.is_banned ? '✅ Да' : '❌ Нет'}</p>
+
+            ${r.status === 'pending' ? `
+                <div style="margin-top: 20px;">
+                    <button class="confirm" onclick="ReportsModule.resolve(${r.report_id}, 'confirm')">✅ Подтвердить жалобу</button>
+                    <button class="reject" onclick="ReportsModule.resolve(${r.report_id}, 'reject')">❌ Отклонить жалобу</button>
+                </div>
+            ` : ''}
+        `;
+
+        // Обновляем выделение в списке
+        loadReports(currentStatus, currentPage, currentSearch);
+    }
+    async function resolve(reportId, action) {
+        await fetch(`/api/reports/${reportId}/resolve`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({action: action, notes: ''})
+        });
+        loadReports(currentStatus, currentPage, currentSearch);
+        document.getElementById('report_info').innerHTML = 'Жалоба обработана';
+        currentReport = null;
+    }
+    
+    function refresh() {
+        loadReports(currentStatus, 1, currentSearch);
+    }
+    
+    function searchReports() {
+        const query = document.getElementById('search_reports').value;
+        loadReports(currentStatus, 1, query);
+    }
+    
+    function sortBy(field) {
+        if (sortField === field) {
+            sortOrder = sortOrder === 'DESC' ? 'ASC' : 'DESC';
+        } else {
+            sortField = field;
+            sortOrder = 'DESC';
+        }
+        loadReports(currentStatus, 1, currentSearch);
+    }
+    
+    // Загружаем при старте
+    loadReports('all');
+    
+    return {
+        loadReports: loadReports,
+        selectReport: selectReport,
+        resolve: resolve,
+        refresh: refresh,
+        searchReports: searchReports,
+        sortBy: sortBy
+    };
+})();
+</script>

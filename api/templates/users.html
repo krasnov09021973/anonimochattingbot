@@ -1,0 +1,203 @@
+<div style="display: flex; gap: 20px;">
+    <div style="flex: 1;">
+        <h3>👥 Список пользователей</h3>
+        <input type="text" id="search_user" class="search-box" placeholder="Search by ID or username" style="margin-bottom: 10px;">
+        <button onclick="searchUser()">🔍 Search</button>
+        <button onclick="loadUsers(1)">🔄 Сброс</button>
+
+        <div id="users_list" style="max-height: 500px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px;">
+            <!-- список пользователей -->
+        </div>
+        <div id="pagination" style="margin-top: 10px;"></div>
+    </div>
+
+    <div id="user_details" style="flex: 1; border-left: 1px solid #ddd; padding-left: 20px;">
+        <h3>📋 Информация о пользователе</h3>
+        <div id="user_stats">Выберите пользователя из списка</div>
+        <div id="user_photos"></div>
+        <div id="user_actions" style="margin-top: 20px;"></div>
+    </div>
+</div>
+
+<script>
+window.UsersModule = (function() {
+    let currentPage = 1;
+    let currentUser = null;
+    let currentSearch = '';
+
+    async function loadUsers(page = 1, search = '') {
+        currentPage = page;
+        currentSearch = search;
+        const response = await fetch(`/api/users?page=${page}&limit=20&search=${encodeURIComponent(search)}`);
+        const data = await response.json();
+
+        let html = '<table style="width: 100%;">';
+        for (let u of data.users) {
+            const isSelected = currentUser && currentUser.user_id === u.user_id;
+            html += `<tr>
+                <td style="padding: 8px; border-bottom: 1px solid #ddd; cursor: pointer; background: ${isSelected ? '#e3f2fd' : 'transparent'}"
+                    onclick="UsersModule.selectUser(${u.user_id})">
+                    <b>${u.user_id}</b><br>
+                    <small>${u.username || 'No username'} | ${u.chats_count} chats | ${u.reputation} rep</small>
+                    ${u.is_banned ? '<span style="color:red">🚫 Banned</span>' : ''}
+                    ${u.is_premium ? '<span style="color:gold">💎 Premium</span>' : ''}
+                </td>
+            </tr>`;
+        }
+        html += '</table>';
+        document.getElementById('users_list').innerHTML = html;
+
+        let paginationHtml = '';
+        if (data.total_pages > 1) {
+            paginationHtml += '<div style="display: flex; gap: 5px; justify-content: center;">';
+            for (let i = 1; i <= data.total_pages; i++) {
+                paginationHtml += `<button onclick="UsersModule.loadUsers(${i}, '${search}')" style="padding: 5px 10px; background: ${i === page ? '#007bff' : '#f0f0f0'}; color: ${i === page ? 'white' : 'black'}">${i}</button>`;
+            }
+            paginationHtml += '</div>';
+        }
+        document.getElementById('pagination').innerHTML = paginationHtml;
+    }
+
+    async function givePremium(userId) {
+        const duration = document.getElementById('premium_duration').value;
+        await fetch('/api/user/premium/give', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({user_id: userId, duration: duration})
+        });
+        selectUser(userId);  // Обновляем информацию
+    }
+
+    async function revokePremium(userId) {
+        if (confirm('Снять премиум с пользователя ' + userId + '?')) {
+            await fetch('/api/user/premium/revoke', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({user_id: userId})
+            });
+            selectUser(userId);
+        }
+    }
+
+    async function selectUser(userId) {
+        const response = await fetch(`/api/user/${userId}`);
+        const user = await response.json();
+        currentUser = user;
+
+        let userStatus = '';
+        if (user.is_banned) {
+            userStatus = '🚫 Забанен';
+        } else if (user.is_admin) {
+            userStatus = '👑 Админ';
+        } else if (user.is_premium) {
+            userStatus = '💎 Премиум';
+        } else if (user.user_status === 'guest') {
+            userStatus = '👋 Гость';
+        } else {
+            userStatus = '👤 Пользователь';
+        }
+
+        document.getElementById('user_stats').innerHTML = `
+            <p><b>ID:</b> ${user.user_id}</p>
+            <p><b>Telegram Username:</b> ${user.username || '❌ нет'}</p>
+            <p><b>Chat Name:</b> ${user.chat_name || '❌ не задано'}</p>
+            <p><b>Age:</b> ${user.age || '❌ не указан'}</p>
+            <p><b>Gender:</b> ${user.gender === 'male' ? '👨 Мужской' : user.gender === 'female' ? '👩 Женский' : '❌ не указан'}</p>
+            <p><b>Reputation:</b> ${user.reputation}/100</p>
+            <p><b>Chats total:</b> ${user.chats_count}</p>
+            <p><b>Messages sent:</b> ${user.total_messages_sent}</p>
+            <p><b>Registered:</b> ${user.registered_at}</p>
+            <p><b>Last activity:</b> ${user.last_activity}</p>
+            <p><b>Status:</b> ${userStatus}</p>
+        `;
+
+        if (user.photos && user.photos.length > 0) {
+            let photosHtml = '<h4>📸 Photos:</h4><div style="display: flex; gap: 10px; flex-wrap: wrap;">';
+            for (let photo of user.photos) {
+                photosHtml += `<img src="${photo}" width="80" height="80" style="border-radius: 10px; object-fit: cover;">`;
+            }
+            photosHtml += '</div>';
+            document.getElementById('user_photos').innerHTML = photosHtml;
+        } else {
+            document.getElementById('user_photos').innerHTML = '<p>No photos</p>';
+        }
+
+        document.getElementById('user_actions').innerHTML = `
+            <button onclick="UsersModule.toggleBan(${user.user_id}, ${user.is_banned})" class="ban" style="margin-right: 10px;">
+                ${user.is_banned ? '🔓 Unban' : '🚫 Ban'}
+            </button>
+            <div style="margin: 10px 0;">
+                <select id="premium_duration" style="padding: 5px; margin-right: 10px;">
+                    <option value="day">📅 1 день</option>
+                    <option value="week">📅 1 неделя</option>
+                    <option value="month">📅 1 месяц</option>
+                    <option value="3months">📅 3 месяца</option>
+                    <option value="year">📅 1 год</option>
+                    <option value="forever">🌟 Навсегда</option>
+                </select>
+                <button onclick="UsersModule.givePremium(${user.user_id})" class="premium">
+                    💎 Выдать Premium
+                </button>
+                ${user.is_premium ? `<button onclick="UsersModule.revokePremium(${user.user_id})" style="background: #dc3545; color: white; border: none; margin-left: 10px;">❌ Снять Premium</button>` : ''}
+            </div>
+            <button onclick="UsersModule.deleteUser(${user.user_id})" style="background: #6c757d; color: white; border: none;">
+                🗑️ Delete
+            </button>
+        `;
+
+        loadUsers(currentPage, currentSearch);
+
+    }
+
+    function searchUser() {
+        const query = document.getElementById('search_user').value;
+        loadUsers(1, query);
+    }
+
+    function toggleBan(userId, isBanned) {
+        fetch('/api/user/ban', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({user_id: userId, ban: !isBanned})
+        }).then(() => selectUser(userId));
+    }
+
+    function togglePremium(userId, isPremium) {
+        fetch('/api/user/premium', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({user_id: userId, premium: !isPremium})
+        }).then(() => selectUser(userId));
+    }
+
+    function deleteUser(userId) {
+        if (confirm('Удалить пользователя ' + userId + '? Это действие необратимо!')) {
+            fetch('/api/user/delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({user_id: userId})
+            }).then(() => {
+                loadUsers(1, '');
+                document.getElementById('user_stats').innerHTML = 'Пользователь удалён';
+                document.getElementById('user_photos').innerHTML = '';
+                document.getElementById('user_actions').innerHTML = '';
+                currentUser = null;
+            });
+        }
+    }
+
+    // Загружаем при старте
+    loadUsers(1);
+
+    return {
+        loadUsers: loadUsers,
+        selectUser: selectUser,
+        searchUser: searchUser,
+        toggleBan: toggleBan,
+        togglePremium: togglePremium,
+        givePremium: givePremium,     // ← должна быть эта строка
+        revokePremium: revokePremium, // ← и эта
+        deleteUser: deleteUser
+    };
+})();
+</script>

@@ -1,0 +1,31 @@
+<div id="premium_list"></div>
+
+<script>
+    function loadPremium() {
+        fetch('/api/premium/users')
+            .then(res => res.json())
+            .then(data => {
+                let html = '<table><thead><tr><th>User ID</th><th>Username</th><th>Premium Until</th><th>Action</th></tr></thead><tbody>';
+                for (let u of data) {
+                    html += `<tr>
+                        <td>${u.user_id}</td>
+                        <td>${u.username || 'N/A'}</td>
+                        <td>${u.premium_until || 'Forever'}</td>
+                        <td><button onclick="revokePremium(${u.user_id})">❌ Revoke</button></td>
+                    </tr>`;
+                }
+                html += '</tbody></table>';
+                document.getElementById('premium_list').innerHTML = html;
+            });
+    }
+    
+    function revokePremium(userId) {
+        fetch('/api/user/premium', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({user_id: userId, premium: false})
+        }).then(() => loadPremium());
+    }
+    
+    loadPremium();
+</script>

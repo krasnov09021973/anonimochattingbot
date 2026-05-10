@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Login</title>
+	<link rel="icon" type="image/png" href="/static/favicon-96x96.png" sizes="96x96" />
+	<link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+	<link rel="shortcut icon" href="/static/favicon.ico" />
+	<link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png" />
+	<meta name="apple-mobile-web-app-title" content="AnonymoChattingBot" />
+	<link rel="manifest" href="/static/site.webmanifest" />
+    <style>
+        body { font-family: sans-serif; max-width: 400px; margin: 50px auto; padding: 20px; }
+        input { padding: 10px; font-size: 16px; width: 100%; margin-bottom: 10px; }
+        button { padding: 10px; font-size: 16px; background: #007bff; color: white; border: none; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>👑 Admin Login</h1>
+    <form method="post" action="/login">
+        <input type="text" name="pin" placeholder="PIN from bot" required>
+        <button type="submit">Login</button>
+    </form>
+</body>
+</html>

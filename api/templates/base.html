@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Panel</title>
+	<link rel="icon" type="image/png" href="/static/favicon-96x96.png" sizes="96x96" />
+	<link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+	<link rel="shortcut icon" href="/static/favicon.ico" />
+	<link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png" />
+	<meta name="apple-mobile-web-app-title" content="AnonymoChattingBot" />
+	<link rel="manifest" href="/static/site.webmanifest" />
+	<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <style>
+        body { font-family: sans-serif; margin: 0; padding: 20px; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid #ddd; }
+        .tab { padding: 10px 20px; cursor: pointer; background: #f0f0f0; border-radius: 8px 8px 0 0; }
+        .tab.active { background: #007bff; color: white; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .stats { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
+        .card { background: #f5f5f5; padding: 20px; border-radius: 10px; min-width: 150px; }
+        .card h3 { margin: 0 0 10px 0; }
+        .card .value { font-size: 28px; font-weight: bold; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        button { padding: 5px 10px; margin: 2px; cursor: pointer; }
+        .ban { background: #dc3545; color: white; border: none; }
+        .premium { background: #ffc107; border: none; }
+        .confirm { background: #28a745; color: white; border: none; }
+        .reject { background: #dc3545; color: white; border: none; }
+        .search-box { padding: 8px; width: 300px; margin-right: 10px; }
+    </style>
+</head>
+<body>
+    <h1>👑 Admin Panel</h1>
+    
+    <div class="tabs">
+        <div class="tab active" data-tab="dashboard">📊 Dashboard</div>
+        <div class="tab" data-tab="reports">⚠️ Reports</div>
+        <div class="tab" data-tab="users">👥 Users</div>
+        <div class="tab" data-tab="premium">💎 Premium</div>
+    </div>
+    
+    <div id="content">
+        <!-- сюда загружается содержимое вкладки -->
+    </div>
+    
+    <script>
+        async function loadTab(tabName) {
+            console.log('Loading tab:', tabName);
+            const response = await fetch('/api/tab/' + tabName);
+            const html = await response.text();
+
+            // Очищаем содержимое
+            const contentDiv = document.getElementById('content');
+            contentDiv.innerHTML = html;
+
+            // Удаляем старые скрипты
+            document.querySelectorAll('.dynamic-script').forEach(script => script.remove());
+
+            // Извлекаем и выполняем скрипты из нового HTML
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = html;
+            const scripts = tempDiv.querySelectorAll('script');
+
+            scripts.forEach(script => {
+                const newScript = document.createElement('script');
+                newScript.className = 'dynamic-script';
+                if (script.src) {
+                    newScript.src = script.src;
+                } else {
+                    newScript.textContent = script.textContent;
+                }
+                document.body.appendChild(newScript);
+            });
+
+            // Обновляем активную вкладку
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelector(`.tab[data-tab="${tabName}"]`).classList.add('active');
+
+            // Если загрузили dashboard, обновляем статистику
+            if (tabName === 'dashboard') {
+                setTimeout(() => {
+                    fetch('/api/stats')
+                        .then(res => res.json())
+                        .then(data => {
+                            const totalUsers = document.getElementById('total_users');
+                            const active24h = document.getElementById('active_24h');
+                            const pendingReports = document.getElementById('pending_reports');
+                            if (totalUsers) totalUsers.innerText = data.total_users || 0;
+                            if (active24h) active24h.innerText = data.active_24h || 0;
+                            if (pendingReports) pendingReports.innerText = data.pending_reports || 0;
+                        });
+                }, 50);
+            }
+        }
+
+        // Загружаем dashboard при старте
+        loadTab('dashboard');
+        
+        // Навешиваем обработчики на вкладки
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => loadTab(tab.dataset.tab));
+        });
+    </script>
+</body>
+</html>
