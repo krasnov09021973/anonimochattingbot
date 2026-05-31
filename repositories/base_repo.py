@@ -1,79 +1,93 @@
 # repositories/base_repo.py
 """
-Базовый класс для всех репозиториев.
-Содержит общие методы для работы с БД.
+Базовый репозиторий с асинхронными методами.
 """
 
-import sqlite3
+import aiosqlite
 import logging
 from pathlib import Path
-from typing import Optional, Any, List, Dict
+from typing import Optional, Dict, List, Any
 
 logger = logging.getLogger(__name__)
 
 
 class BaseRepo:
-    """Базовый класс репозитория. Все репозитории наследуются от него."""
+    """Базовый класс для всех репозиториев"""
 
-    def __init__(self, db_path: str):
-        """
-        Инициализация репозитория.
-
-        :param db_path: путь к файлу базы данных SQLite
-        """
+    def __init__(self, db_path: Path):
         self.db_path = db_path
-        self._ensure_tables()  # создаём таблицы при инициализации
 
-    def _get_connection(self) -> sqlite3.Connection:
-        """
-        Возвращает соединение с БД.
-        Используем row_factory = sqlite3.Row, чтобы обращаться к колонкам по имени.
-        """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _ensure_tables(self):
-        """
-        Создаёт все таблицы, если их нет.
-        Этот метод будет переопределён в дочерних классах.
-        """
-        raise NotImplementedError("Дочерний класс должен реализовать _ensure_tables()")
-
-    def _execute(self, query: str, params: tuple = ()) -> Optional[sqlite3.Cursor]:
-        """
-        Выполняет SQL-запрос с параметрами.
-        Используется для INSERT, UPDATE, DELETE.
-        """
+    async def _execute(self, query: str, params: tuple = ()) -> Optional[aiosqlite.Cursor]:
+        """Выполняет INSERT/UPDATE/DELETE"""
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, params)
-                conn.commit()
+            async with aiosqlite.connect(self.db_path) as conn:
+                conn.row_factory = aiosqlite.Row
+                cursor = await conn.execute(query, params)
+                await conn.commit()
                 return cursor
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             logger.error(f"Ошибка БД: {e}\nЗапрос: {query}\nПараметры: {params}")
             return None
 
-    def _fetch_one(self, query: str, params: tuple = ()) -> Optional[Dict]:
-        """Выполняет SELECT и возвращает одну строку (в виде словаря)"""
+    async def _fetch_one(self, query: str, params: tuple = ()) -> Optional[Dict]:
+        """Выполняет SELECT и возвращает одну строку"""
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, params)
-                row = cursor.fetchone()
+            async with aiosqlite.connect(self.db_path) as conn:
+                conn.row_factory = aiosqlite.Row
+                cursor = await conn.execute(query, params)
+                row = await cursor.fetchone()
                 return dict(row) if row else None
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             logger.error(f"Ошибка БД: {e}\nЗапрос: {query}")
             return None
 
-    def _fetch_all(self, query: str, params: tuple = ()) -> List[Dict]:
-        """Выполняет SELECT и возвращает все строки (в виде списка словарей)"""
+    async def _fetch_all(self, query: str, params: tuple = ()) -> List[Dict]:
+        """Выполняет SELECT и возвращает все строки"""
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, params)
-                return [dict(row) for row in cursor.fetchall()]
-        except sqlite3.Error as e:
+            async with aiosqlite.connect(self.db_path) as conn:
+                conn.row_factory = aiosqlite.Row
+                cursor = await conn.execute(query, params)
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+        except aiosqlite.Error as e:
             logger.error(f"Ошибка БД: {e}\nЗапрос: {query}")
             return []
+
+    async def _get_connection(self) -> aiosqlite.Connection:
+        """Возвращает асинхронное соединение с БД"""
+        conn = await aiosqlite.connect(self.db_path)
+        conn.row_factory = aiosqlite.Row
+        return conn
+
+    # async def _execute(self, query: str, params: tuple = ()) -> Optional[aiosqlite.Cursor]:
+    #     """Выполняет запрос INSERT/UPDATE/DELETE"""
+    #     try:
+    #         async with await self._get_connection() as conn:
+    #             cursor = await conn.execute(query, params)
+    #             await conn.commit()
+    #             return cursor
+    #     except aiosqlite.Error as e:
+    #         logger.error(f"Ошибка БД: {e}\nЗапрос: {query}\nПараметры: {params}")
+    #         return None
+    #
+    # async def _fetch_one(self, query: str, params: tuple = ()) -> Optional[Dict]:
+    #     """Выполняет SELECT и возвращает одну строку"""
+    #     try:
+    #         async with await self._get_connection() as conn:
+    #             cursor = await conn.execute(query, params)
+    #             row = await cursor.fetchone()
+    #             return dict(row) if row else None
+    #     except aiosqlite.Error as e:
+    #         logger.error(f"Ошибка БД: {e}\nЗапрос: {query}")
+    #         return None
+    #
+    # async def _fetch_all(self, query: str, params: tuple = ()) -> List[Dict]:
+    #     """Выполняет SELECT и возвращает все строки"""
+    #     try:
+    #         async with await self._get_connection() as conn:
+    #             cursor = await conn.execute(query, params)
+    #             rows = await cursor.fetchall()
+    #             return [dict(row) for row in rows]
+    #     except aiosqlite.Error as e:
+    #         logger.error(f"Ошибка БД: {e}\nЗапрос: {query}")
+    #         return []

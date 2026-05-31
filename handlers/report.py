@@ -1,14 +1,14 @@
 # handlers/report.py
+"""Обработчики жалоб (callback)"""
+
 from aiogram import Router
 from aiogram.types import CallbackQuery
 
-router = Router()
+report_router = Router()
 
 
-@router.callback_query(lambda c: c.data.startswith('report:'))
+@report_router.callback_query(lambda c: c.data.startswith('report:'))
 async def process_report(callback: CallbackQuery):
-    await callback.answer("⚠️", show_alert=False)
-    try:
-        await callback.message.delete()
-    except:
-        pass
+    """Обработка жалобы"""
+    await callback.answer(get_message('report_sent'), show_alert=False)
+    await callback.message.delete()

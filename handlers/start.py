@@ -1,71 +1,62 @@
-# handlers/start.py
-"""
-Обработчики команд /start, /menu, /id и кнопок главного меню
-"""
+"""Обработчики команд /start, /menu, /id"""
 
-from aiogram import Router
-from aiogram.types import Message
+from aiogram import Router, F
+from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 
-from handlers.keyboards import get_search_start_keyboard
-from utils.deps import get_universe, get_user_repo
+from lang import get_message
+from services.user_service import UserService
+from handlers.keyboards import get_search_start_keyboard, get_language_selection_keyboard
 
-router = Router()
+# Создаем локальный роутер
+start_router = Router()  # Переименовали в start_router для соответствия вашему main.py
 
-@router.message(Command("start", "menu"))
-async def cmd_start(message: Message):
-    """
-    Команда /start или /menu — показывает главный экран бота.
 
-    Здесь пользователь может:
-    - Начать поиск собеседника
-    - Перейти в свой профиль
-    - Выбрать темы
-    - Узнать о премиуме и т.д.
-    """
+@start_router.message(Command("start", "menu"))
+async def cmd_start(message: Message, user_service: UserService, user_lang: str):
     user_id = message.from_user.id
+    username = message.from_user.username
 
-    universe = get_universe()  # ← без аргументов
-    user_repo = get_user_repo() # ← без аргументов
+    # Сервис регистрирует юзера и обновляет его активность
+    await user_service.register_or_resume_user(user_id, username)
 
-    # Если пользователь в чате — сначала он должен его завершить
-    if universe.is_in_chat(user_id):
+    # Если язык не выбран, отправляем Inline-кнопки выбора языка
+    if user_lang == 'unknown' or not user_lang:
         await message.answer(
-            "❌ Вы сейчас в чате!\n\n"
-            "Сначала завершите текущий диалог (кнопка '⏹️ Завершить'), "
-            "а затем начните поиск снова."
+            "👋 Пожалуйста, выберите язык интерфейса:\nPlease choose your language:",
+            reply_markup=get_language_selection_keyboard()
         )
         return
 
-    # Убеждаемся, что пользователь не в поиске
-    universe.remove_from_queue(user_id)
-
-    # Регистрируем или обновляем пользователя в БД
-    username = message.from_user.username
-    user_repo.add_or_update_user(user_id, username)
-    user_repo.update_activity(user_id)
-
-    # Приветственное сообщение
-    welcome_text = (
-        "✨ <b>Добро пожаловать в Анонимный Чат!</b> ✨\n\n"
-        "👇 <i>Основные функции:</i>\n"
-        "• <b>🔍 Поиск собеседника</b> — найти собеседника\n"
-        "• <b>🎯 Мои темы</b> — выбрать темы для общения\n\n"
-        "📜 Используя бота, вы принимаете условия "
-        "<a href='https://tgbot.local-net.ru:8444/oferta.html'>оферты</a>."
-    )
-
+    # user_lang уже под рукой, берется из кэша оперативки без нагрузки на БД!
     await message.answer(
-        welcome_text,
-        reply_markup=get_search_start_keyboard()  # ← используем правильную клавиатуру
+        get_message('welcome', lang=user_lang),
+        reply_markup=get_search_start_keyboard(user_lang)
     )
 
+# 2. Хэндлер обработки нажатия на кнопку языка (Поместили СЮДА!)
+@start_router.callback_query(F.data.startswith("set_lang:"))
+async def set_language_handler(callback: CallbackQuery, user_service: UserService):
+    user_id = callback.from_user.id
+    chosen_lang = callback.data.split(":")[1] # Получаем "ru" или "en"
 
-@router.message(Command("id", "myid"))
+    # Сохраняем язык в БД и ОЗУ-кэш через сервис
+    await user_service.set_user_language(user_id, chosen_lang)
+
+    await callback.answer(get_message('lang_changed', lang=chosen_lang))
+    await callback.message.delete() # Удаляем сообщение с кнопками выбора языка
+
+    # Отправляем приветствие на новом языке со стартовой клавиатурой поиска
+    await callback.message.answer(
+        get_message('welcome', lang=chosen_lang),
+        reply_markup=get_search_start_keyboard(chosen_lang)
+    )
+
+@start_router.message(Command("id", "myid"))
 async def cmd_id(message: Message):
-    """Команда /id — показывает ID пользователя"""
+    """Показать ID пользователя"""
     user_id = message.from_user.id
-    await message.answer(
-        f"🆔 <b>Ваш ID:</b> <code>{user_id}</code>\n\n"
-        f"📝 <i>Может понадобиться для связи с поддержкой</i>"
-    )
+
+    # Больше никаких "await user_service.get_user_language"
+    text = get_message('id_info', lang=user_lang, user_id=user_id)
+    await message.answer(text)

@@ -15,8 +15,7 @@ import random
 import json
 from typing import Optional, Dict, List, Any
 
-from config import AI_API_KEY, AI_API_URL
-from repositories.universe import Universe
+from config import settings
 from repositories.user_repo import UserRepo
 from repositories.ai_repo import AIRepo
 
@@ -26,22 +25,22 @@ logger.setLevel(logging.DEBUG)  # принудительно
 class AIService:
     """Сервис для управления AI-собеседником"""
 
-    def __init__(self, universe: Universe, user_repo: UserRepo, ai_repo: AIRepo):
+    def __init__(self, user_repo: UserRepo, ai_repo: AIRepo):
         """
         Инициализация AI сервиса.
 
-        :param universe: единое хранилище состояний
         :param user_repo: репозиторий пользователей
         :param ai_repo: репозиторий AI
         """
-        self.universe = universe
         self.user_repo = user_repo
         self.ai_repo = ai_repo
-        self._load_settings()
+        # self._load_settings()
+        # Запускаем загрузку настроек в фоне
+        asyncio.create_task(self._load_settings())
 
-    def _load_settings(self):
+    async def _load_settings(self):
         """Загружает настройки AI из БД"""
-        settings = self.ai_repo.get_ai_settings()
+        settings = await self.ai_repo.get_settings()  # ← добавить await
         self.ai_enabled = settings.get('ai_enabled', '1') == '1'
         self.ai_timeout = int(settings.get('ai_timeout', '15'))
         self.default_model = settings.get('default_model', 'nvidia/nemotron-3-nano-30b-a3b:free')
@@ -51,6 +50,19 @@ class AIService:
         self.top_p = float(settings.get('top_p', '0.9'))
         self.frequency_penalty = float(settings.get('frequency_penalty', '0.3'))
         self.presence_penalty = float(settings.get('presence_penalty', '0.2'))
+
+    # def _load_settings(self):
+    #     """Загружает настройки AI из БД"""
+    #     settings = self.ai_repo.get_settings()
+    #     self.ai_enabled = settings.get('ai_enabled', '1') == '1'
+    #     self.ai_timeout = int(settings.get('ai_timeout', '15'))
+    #     self.default_model = settings.get('default_model', 'nvidia/nemotron-3-nano-30b-a3b:free')
+    #     self.max_free_messages = int(settings.get('max_free_messages', '50'))
+    #     self.temperature = float(settings.get('temperature', '0.9'))
+    #     self.max_tokens = int(settings.get('max_tokens', '400'))
+    #     self.top_p = float(settings.get('top_p', '0.9'))
+    #     self.frequency_penalty = float(settings.get('frequency_penalty', '0.3'))
+    #     self.presence_penalty = float(settings.get('presence_penalty', '0.2'))
 
     def refresh_settings(self):
         """Обновляет настройки из БД (для админки)"""
@@ -75,9 +87,7 @@ class AIService:
     # ВЫБОР ПЕРСОНАЖА
     # ================================================================
 
-    def get_random_character(self, gender_filter: str = "normal",
-                             user_topics: list = None,
-                             user_gender: str = "unknown") -> Dict:
+    async def get_random_character(self, gender_filter: str = "normal", user_topics: list = None, user_gender: str = "unknown") -> dict:
         """
         Выбирает случайного AI персонажа.
 
@@ -102,14 +112,22 @@ class AIService:
 
         logger.info(f"[AI] Выбор персонажа: тема={topic_name}, фильтр={gender_filter}")
 
-        # Пытаемся найти персонажа по теме из БД
-        character = self.ai_repo.get_character_by_topic(topic_name, gender_filter)
+        # 1. Получаем список персонажей из базы (он асинхронный, тут всё ОК)
+        character = await self.ai_repo.get_character_by_topic(topic_name, gender_filter)
 
-        # Если не нашли — берём стандартного персонажа
-        if not character:
-            character = self._get_default_character(gender_filter)
-            topic_name = "обычный чат"
+         # 2. Если по этой теме в базе вообще никого не нашлось
+        # =====================================================================
+        # ЖЕСТКАЯ ПРОВЕРКА ТИПА ПЕРЕД ВОЗВРАТОМ (ВСТАВИТЬ СЮДА!)
+        # =====================================================================
+        if isinstance(character, list):
+            import random
+            if len(character) > 0:
+                character = random.choice(character)
+            else:
+                # Если из базы почему-то прилетел пустой список [], уходим на заглушку
+                character = await self._get_default_character(gender_filter)
 
+        # Строка 137: Теперь character гарантированно является словарем!
         return {
             "id": character.get('id'),
             "name": character['name'],
@@ -146,66 +164,61 @@ class AIService:
     # УПРАВЛЕНИЕ СЕССИЯМИ
     # ================================================================
 
+    # Обновленный метод внутри класса AIService в ai_service.py
+
     async def start_session(self, user_id: int) -> bool:
         """
-        Начинает AI сессию для пользователя.
-
-        :param user_id: ID пользователя
-        :return: True если сессия успешно начата
+        Начинает AI сессию для пользователя по таймауту из очереди.
+        ИСПРАВЛЕНО: SQL-запрос полностью вырезан и делегирован в ai_repo.
         """
-        # Проверяем, не в чате ли уже
-        if self.universe.is_in_chat(user_id):
-            logger.warning(f"Пользователь {user_id} уже в чате, AI не подключаем")
+        # 1. Получаем данные пользователя и его интересы из БД
+        user_data = await self.user_repo.get_user(user_id)
+        user_gender = user_data.get('gender', 'unknown') if user_data else 'unknown'
+        user_topics = await self.user_repo.get_user_selected_topics(user_id) if user_data else []
+
+        # 2. Подбираем случайного ИИ-персонажа через ваш готовый асинхронный метод
+        character = await self.get_random_character(
+            gender_filter="normal",
+            user_topics=user_topics,
+            user_gender=user_gender
+        )
+
+        if not character or not character.get('id'):
             return False
 
-        # Получаем данные пользователя
-        user_data = self.user_repo.get_user(user_id)
-        user_gender = user_data.get('gender', 'unknown') if user_data else 'unknown'
-        user_topics = self.user_repo.get_user_topics(user_id) if user_data else []
+        # 3. Привязываем ИИ к юзеру в таблице users (поле current_ai_char)
+        await self.user_repo.update_user_ai_character(user_id, character['id'])
 
-        # Получаем тип поиска (из user_states)
-        search_type = self.universe.user_states.get(user_id, {}).get('search_type', 'normal')
+        # 4. Инициализируем пустую историю сообщений в ОЗУ
+        self._ai_histories[user_id] = []
 
-        # Выбираем персонажа
-        character = self.get_random_character(search_type, user_topics, user_gender)
-
-        # Создаём сессию в Universe
-        self.universe.start_ai_session(user_id, character)
-
-        # Логируем сессию в БД
-        if character.get('id'):
-            self.ai_repo.log_session_start(user_id, character['id'])
-
-        # Отправляем приветственное сообщение
-        from handlers.keyboards import get_chat_end_keyboard
-
-        welcome_text = (
-            "🎉 <b>Собеседник найден!</b>\n"
-            "👇 Вы можете общаться как в обычном чате."
-        )
-
-        # Импортируем bot через ленивый импорт (чтобы избежать циклических ссылок)
-        from utils.deps import get_bot
-        bot = get_bot()
-        await bot.send_message(
-            user_id,
-            welcome_text,
-            reply_markup=get_chat_end_keyboard()
-        )
+        # 5. ПРЯМАЯ ТРАССА: Просто просим репозиторий записать лог старта!
+        # Сервис больше не знает, как устроена таблица ai_sessions_log
+        await self.ai_repo.log_session_start(user_id, character['id'])
 
         logger.info(f"AI-чат начат для {user_id} с персонажем {character['name']}")
         return True
 
     async def end_session(self, user_id: int) -> None:
-        """Завершает AI сессию пользователя"""
-        # Логируем завершение в БД
-        character = self.universe.get_ai_character(user_id)
-        if character and character.get('id'):
-            # TODO: найти ID сессии и обновить
-            pass
+        """
+        Завершает AI сессию пользователя, очищает ОЗУ и фиксирует лог в истории.
+        ИСПРАВЛЕНО: SQL-запрос полностью перенесен в репозиторий.
+        """
+        try:
+            # 1. Стираем привязку скрытого робота в таблице users
+            await self.user_repo.update_user_ai_character(user_id, None)
 
-        self.universe.end_ai_session(user_id)
-        logger.info(f"AI-чат завершён для {user_id}")
+            # 2. Удаляем историю из быстрой памяти ОЗУ, освобождая ресурсы сервера
+            if user_id in self._ai_histories:
+                del self._ai_histories[user_id]
+
+            # 3. ПРЯМАЯ ТРАССА: Просим репозиторий зафиксировать время закрытия в БД
+            await self.ai_repo.log_session_end(user_id)
+
+            logger.info(f"AI-чат завершён для пользователя {user_id}")
+
+        except Exception as e:
+            logger.error(f"Ошибка при закрытии ИИ сессии для пользователя {user_id}: {e}")
 
     # ================================================================
     # ОТПРАВКА СООБЩЕНИЙ В AI
@@ -263,6 +276,90 @@ class AIService:
         # Проверяем лимит сообщений
         messages_count = self.universe.get_ai_messages_count(user_id)
         return messages_count < self.max_free_messages
+
+    # services/ai_service.py (добавить метод generate_reply)
+
+    async def generate_reply(self, user_id: int, message_text: str) -> str:
+        """
+        Генерирует ответ AI для пользователя.
+        """
+        # Получаем активную сессию AI для пользователя
+        session = await self._get_or_create_session(user_id)
+
+        if not session:
+            return get_error('ai_error')
+
+        # Добавляем сообщение пользователя в историю
+        session['history'].append({'role': 'user', 'content': message_text})
+
+        # Отправляем запрос к AI API
+        reply = await self._call_ai_api(session['history'])
+
+        if reply is None:
+            return get_error('ai_error')
+
+        # Добавляем ответ в историю
+        session['history'].append({'role': 'assistant', 'content': reply})
+
+        return reply
+
+    async def _call_ai_api(self, history: list) -> Optional[str]:
+
+        """Отправляет контекст в API, используя ai_timeout для контроля сети"""
+
+        # Считываем сетевые параметры из вашей таблицы
+        api_url = await self.ai_repo.get_setting('ai_api_url', 'https://openrouter.ai')
+        api_key = await self.ai_repo.get_setting('ai_api_key', '')
+
+        # ИСПРАВЛЕНО: Читаем ваш ключ ai_timeout из БД (время ожидания ответа движка)
+        db_timeout_str = await self.ai_repo.get_setting('ai_timeout', default='15')
+        engine_timeout_sec = int(db_timeout_str)
+
+        # Считываем параметры генерации
+        model_name = await self.ai_repo.get_setting('default_model', 'nvidia/nemotron-3-nano-30b-a3b:free')
+        db_temp = float(await self.ai_repo.get_setting('temperature', '0.9'))
+        db_tokens = int(await self.ai_repo.get_setting('max_tokens', '400'))
+        db_top_p = float(await self.ai_repo.get_setting('top_p', '0.9'))
+        db_freq = float(await self.ai_repo.get_setting('frequency_penalty', '0.3'))
+        db_pres = float(await self.ai_repo.get_setting('presence_penalty', '0.2'))
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "model": model_name,
+            "messages": history,
+            "temperature": db_temp,
+            "max_tokens": db_tokens,
+            "top_p": db_top_p,
+            "frequency_penalty": db_freq,
+            "presence_penalty": db_pres
+        }
+
+        try:
+            # ПРИМЕНЯЕМ ТАЙМАУТ ДВИЖКА: Передаем секунды из базы данных!
+            client_timeout = aiohttp.ClientTimeout(total=engine_timeout_sec)
+
+            async with aiohttp.ClientSession(timeout=client_timeout) as session:
+                async with session.post(api_url, headers=headers, json=payload) as response:
+                    if response.status == 200:
+                        result_json = await response.json()
+                        return result_json['choices']['message']['content']
+                    else:
+                        logger.error(f"[AI_API] Ошибка движка {model_name}. Статус: {response.status}")
+                        return None
+
+        except asyncio.TimeoutError:
+            # Если движок превысил время ожидания ai_timeout из БД
+            logger.error(f"[AI_API] Движок нейросети таймаутнул после {engine_timeout_sec} сек ожидания!")
+            # TODO: Здесь в будущем будет вызов метода ротации (fallback_to_next_model)
+            return None
+        except Exception as e:
+            logger.error(f"[AI_API] Ошибка сети при запросе к ИИ: {e}")
+            return None
+
 
 #     async def _call_ai_api(self, messages: List[Dict]) -> Optional[str]:
 #         """
@@ -324,14 +421,14 @@ class AIService:
         Формат запроса — совместим с OpenAI API.
         :return: ответ AI или None при ошибке
         """
-        if not AI_API_KEY:
-            logger.error("AI_API_KEY не настроен")
+        if not settings.ai_api_key:
+            logger.error(f"[AI] API ключ не настроен: {settings.ai_api_key}")
             return None
 
         model_config = self.get_active_model()
 
         headers = {
-            "Authorization": f"Bearer {AI_API_KEY}",
+            "Authorization": f"Bearer {settings.ai_api_key}",
             "Content-Type": "application/json"
         }
 
@@ -348,7 +445,7 @@ class AIService:
         for attempt in range(retry + 1):
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.post(AI_API_URL, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    async with session.post(settings.ai_api_url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             reply = data.get("choices", [{}])[0].get("message", {}).get("content")

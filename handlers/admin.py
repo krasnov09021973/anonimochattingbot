@@ -1,30 +1,26 @@
-# handlers/admin_commands.py
+# handlers/admin.py
+"""Админ-команды"""
+
 from aiogram import Router
 from aiogram.types import Message
 from aiogram.filters import Command
-import logging
 
-from utils.admin_auth import generate_pin
+from config import settings
+from lang import get_message, get_error
 
-router = Router()
-logger = logging.getLogger(__name__)
+admin_router = Router()
 
 
-@router.message(Command("admin"))
+@admin_router.message(Command("admin"))
 async def cmd_admin(message: Message):
-    from config import ADMIN_IDS
+    """Вход в админ-панель"""
+    user_id = message.from_user.id
 
-    logger.info(f"[ADMIN] Команда от {message.from_user.id}")
-
-    if str(message.from_user.id) not in ADMIN_IDS:
-        await message.answer("⛔ Доступ запрещён")
+    if user_id not in settings.admin_list:
+        await message.answer(get_error('permission_denied'))
         return
 
-    pin = generate_pin(message.from_user.id)
-
+    # TODO: генерация PIN и ссылка на админку
     await message.answer(
-        f"👑 <b>Вход в админ-панель</b>\n\n"
-        f"Перейдите по адресу: <code>https://tgbot.local-net.ru:8444</code>\n\n"
-        f"<b>Ваш PIN-код:</b> <code>{pin}</code>\n\n"
-        f"<i>Код действителен 5 минут</i>"
+        get_message('admin_pin', admin_url="https://tgbot.local-net.ru:8444", pin="123456")
     )

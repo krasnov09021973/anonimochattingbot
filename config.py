@@ -1,54 +1,61 @@
-# /config.py
-import os
+# config.py
+"""
+Конфигурация бота с использованием pydantic-settings.
+Все настройки загружаются из .env файла и проверяются на типы.
+"""
+
 from pathlib import Path
-from dotenv import load_dotenv
+from typing import List
+from pydantic_settings import BaseSettings
 
-load_dotenv()
 
-# Telegram
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не найден в .env файле")
+class Settings(BaseSettings):
+    """Настройки бота"""
 
-# AI настройки
-AI_ENABLED = os.getenv("AI_ENABLED", "True").lower() == "true"
-AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "15"))  # секунд до подключения AI
-MAX_FREE_AI_MESSAGES = 50
-AI_API_KEY = os.getenv('AI_API_KEY')  # API ключ для AI сервиса (OpenRouter, Arcee, и т.д.)
-# Базовый URL для API (может быть OpenRouter, Arcee, локальный сервер)
-AI_API_URL = os.getenv('AI_API_URL', 'https://openrouter.ai/api/v1/chat/completions')
+    # ========== Telegram ==========
+    bot_token: str                                    # Токен бота из BotFather
 
-# Администраторы (Telegram ID)
-ADMIN_IDS = os.getenv('ADMIN_IDS', '').split(',')
-ADMIN_IDS = [uid.strip() for uid in ADMIN_IDS if uid.strip()]
+    # ========== AI ==========
+    ai_enabled: bool = True                           # Включить AI-собеседника
+    ai_timeout: int = 15                              # Таймаут до подключения AI (секунды)
+    ai_api_key: str = ""                              # API ключ для AI (OpenRouter)
+    ai_api_url: str = ""                              # URL для AI (OpenRouter)
+    max_free_ai_messages: int = 50                    # Лимит сообщений для бесплатных пользователей
 
-# Базовый путь проекта
-BASE_DIR = Path(__file__).parent
+    # ========== Администраторы ==========
+    admin_ids: List[int] = []                         # Telegram ID админов
 
-# Пути к данным
-DB_PATH = BASE_DIR / 'data' / 'anon_chat.db'
-LOG_DIR = BASE_DIR / 'data' / 'logs'
+    # ========== Пути ==========
+    base_dir: Path = Path(__file__).parent
+    db_path: Path = base_dir / "data" / "anon_chat.db"
+    log_dir: Path = base_dir / "logs"
 
-# Создаем папки если их нет
-os.makedirs(LOG_DIR, exist_ok=True)
-os.makedirs(DB_PATH.parent, exist_ok=True)
+    # ========== Лимиты ==========
+    daily_limit_guest: int = 5                        # Гость (до 60 чатов)
+    daily_limit_user: int = 10                        # Обычный пользователь
+    daily_limit_trusted: int = 15                     # Репутация 50-79
+    daily_limit_vip: int = 999                        # Премиум / репутация 80+
 
-# Лимиты (по умолчанию)
-DAILY_LIMIT_GUEST = 5        # гость (до 50 чатов) или репутация 0-25
-DAILY_LIMIT_USER = 10        # обычный пользователь, репутация 25-50
-DAILY_LIMIT_TRUSTED = 20     # репутация 50-100
-DAILY_LIMIT_VIP = 999        # премиум
+    # ========== Возрастные ограничения ==========
+    min_age: int = 12
+    max_age: int = 99
 
-# Возрастные ограничения
-MIN_AGE = 12
-MAX_AGE = 99
+    # ========== Премиум (цены) ==========
+    vip_price_week: int = 199
+    vip_price_month: int = 499
+    vip_price_3months: int = 1499
+    vip_price_year: int = 1899
 
-# Оплата ПРЕМИУМ в звездах и деньгах (рублях)
-VIP_STARS_WEEK = 100
-VIP_STARS_MONTH = 250
-VIP_STARS_HALFYEAR = 750
-VIP_STARS_FULLYEAR = 1000
-VIP_PAY_WEEK = 199
-VIP_PAY_MONTH = 499
-VIP_PAY_HALFYEAR = 1499
-VIP_PAY_FULLYEAR = 1899
+    class Config:
+        # .env на уровень выше (в корне проекта)
+        env_file = Path(__file__).parent.parent / ".env"
+        env_file_encoding = "utf-8"
+        extra = "ignore"  # Игнорируем лишние переменные в .env
+
+
+# Создаём глобальный экземпляр настроек
+settings = Settings()
+
+# Создаём необходимые папки
+settings.log_dir.mkdir(parents=True, exist_ok=True)
+settings.db_path.parent.mkdir(parents=True, exist_ok=True)

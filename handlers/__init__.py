@@ -1,15 +1,25 @@
 # handlers/__init__.py
-"""
-Пакет обработчиков сообщений Telegram.
+"""Пакет хендлеров"""
 
-Каждый файл содержит一组 обработчиков для определенных команд или типов сообщений.
-Все роутеры импортируются в main.py и регистрируются в диспетчере.
-"""
+from .start import start_router
+from .topics import topics_router
+from .search import search_router
+from .chat import chat_router
+from .profile import profile_router
+from .rating import rating_router
+from .report import report_router
+from .admin import admin_router
+from .premium import premium_router
 
-from .start import router as start
-from .search import router as search
-from .chat import router as chat
-from .rating import router as rating
-from .report import router as report
-from .admin import router as admin
-
+# Добавьте этот блок в конец файла:
+__all__ = [
+    "start_router",
+    "topics_router",
+    "search_router",
+    "chat_router",
+    "profile_router",
+    "rating_router",
+    "report_router",
+    "admin_router",
+    "premium_router",
+]

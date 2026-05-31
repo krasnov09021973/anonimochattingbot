@@ -1,8 +1,12 @@
 __pycache__/
 *.pyc
 .env
+.idea/
+.kateproject
 data/*.db
-data/logs/
+data/
+logs/*.log
+logs/
 _backup/
 tmp/
 

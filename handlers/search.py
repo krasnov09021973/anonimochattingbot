@@ -1,201 +1,144 @@
-# handlers/search.py
 """
-Обработчики поиска собеседника.
-Команды: /search, кнопки поиска, отмена поиска
+Файл: src/handlers/search.py
+Компонент: Обработчик интерфейса поиска собеседников.
+Полностью динамический: автоматически поддерживает любое количество языков в системе.
 """
 
 import logging
-from aiogram import Router
-from aiogram.types import Message, CallbackQuery
+from aiogram import Router, F
+from aiogram.types import Message
 from aiogram.filters import Command
 
-from handlers.keyboards import (
-    get_search_cancel_keyboard,
-    get_search_type_keyboard,
-    remove_keyboard
-)
-from utils.deps import get_universe, get_user_repo
+# Импортируем функции перевода, геттер языков и клавиатуры
+from lang import get_message, get_available_languages, get_error
+from services.search_service import SearchService
+from handlers.keyboards import get_search_cancel_keyboard, get_search_start_keyboard
 
 logger = logging.getLogger(__name__)
 
-router = Router()
+# Создаем роутер для поиска собеседников
+search_router = Router()
 
 
-@router.message(Command("search"))
-async def cmd_search(message: Message):
+# =====================================================================
+# ВСПАМОГАТЕЛЬНАЯ ФУНКЦИЯ (ДИНАМИЧЕСКИЙ ФИЛЬТР КНОПКИ ПОИСКА)
+# =====================================================================
+def is_search_button(message: Message) -> bool:
     """
-    Команда /search — начать поиск собеседника.
+    Динамически проверяет, нажал ли пользователь кнопку 'Поиск' на ЛЮБОМ языке.
+    Избавляет проект от хардкода конкретных языков (ru, en, es и т.д.) в фильтрах.
     """
+    if not message.text:
+        return False
+
+    # 1. Запрашиваем актуальный список всех отсканированных языков в системе
+    active_languages = get_available_languages()
+
+    # 2. Собираем массив переводов кнопки 'btn_search' для каждого доступного файла
+    valid_search_buttons = []
+    for lang_code in active_languages.keys():
+        translated_text = get_message('btn_search', lang=lang_code)
+        valid_search_buttons.append(translated_text)
+
+    # 3. Возвращаем True, если текст сообщения совпал хотя бы с одним из вариантов
+    return message.text in valid_search_buttons
+
+def is_cancel_button(message: Message) -> bool:
+    """
+    Динамически проверяет, нажал ли пользователь кнопку 'Стоп/Выход' на ЛЮБОМ языке.
+    Автоматически подтягивает данные из всех файлов в папке lang/.
+    """
+    if not message.text:
+        return False
+
+    # 1. Запрашиваем список всех доступных в системе языков
+    active_languages = get_available_languages()
+
+    # 2. Собираем переводы кнопки 'btn_cancel' для каждого языка
+    valid_stop_buttons = []
+    for lang_code in active_languages.keys():
+        translated_text = get_message('btn_cancel', lang=lang_code)
+        valid_stop_buttons.append(translated_text)
+
+    # 3. Возвращаем True, если текст пользователя совпал с кнопкой стоп на каком-то языке
+    return message.text in valid_stop_buttons
+
+# =====================================================================
+# ОСНОВНОЙ ХЭНДЛЕР: ЗАПУСК ПОИСКА СОБЕСЕДНИКА
+# =====================================================================
+# Триггер А: текстовая команда /search
+@search_router.message(Command("search"))
+# Триггер Б: клик по динамической кнопке отмены на любом языке
+@search_router.message(is_search_button)
+async def cmd_search(message: Message, search_service: SearchService, user_lang: str):
+    """
+    Хэндлер реагирует на команду /search или на клик по физической кнопке поиска.
+    Помещает пользователя в фоновый конвейер ОЗУ-очереди.
+    """
+    logger.info(f"[INFO] cmd_search")
+
     user_id = message.from_user.id
 
-    universe = get_universe()  # ← без аргументов
-    user_repo = get_user_repo() # ← без аргументов
+    logger.info(f"[INFO] user_id: {user_id}, user_lang: {user_lang}")
 
-    # 1. Проверка, не в чате ли
-    if universe.is_in_chat(user_id):
+    # 1. Вызываем метод сервиса, чтобы закинуть ID пользователя в быструю память (ОЗУ)
+    #    Передаем туда также текущий язык сессии, чтобы фоновый поток знал, как писать юзеру
+    result = await search_service.add_to_queue(user_id, user_lang)
+
+    logger.info(f"[INFO] (search_service.add_to_queue) result : {result}")
+
+    # 2. АНАЛИЗИРУЕМ РЕЗУЛЬТАТ ОТ СЕРВИСА И ОТВЕЧАЕМ НА ЯЗЫКЕ СЕССИИ ЮЗЕРА
+    if result == "banned":
+        # Пользователь забанен, выводим сообщение об ошибке
+        await message.answer(get_error('error_banned', lang=user_lang))
+
+    elif result == "already_in_chat":
+        # Пользователь уже общается с кем-то прямо сейчас
+        await message.answer(get_error('error_already_in_chat', lang=user_lang))
+
+    elif result == "already_searching":
+        # Защита от дурака: пользователь нажал кнопку поиска второй раз, пока сидит в очереди
+        await message.answer(get_error('error_already_searching', lang=user_lang))
+
+    elif result == "added":
+        # УСПЕХ: Пользователь успешно встал на конвейер фонового потока!
+        # Отправляем ему системный текст ожидания (например, "⏳ Ищу собеседника...")
+        # И подменяем нижнюю клавиатуру на кнопку "❌ Остановить поиск / диалог"
         await message.answer(
-            "❌ Вы уже в чате!\n\n"
-            "Сначала завершите текущий диалог (кнопка '⏹️ Завершить')."
+            get_message('search_start', lang=user_lang),
+            reply_markup=get_search_cancel_keyboard(user_lang)
         )
-        return
 
-    # 2. Проверка, не в поиске ли уже
-    if user_id in universe.search_queue:
-        await message.answer(
-            "⏳ Вы уже в очереди поиска.\n"
-            "Ожидайте собеседника...\n\n"
-            "Для отмены нажмите '❌ Отменить поиск'."
-        )
-        return
-
-    # 3. Проверка дневного лимита
-    from services.rating_service import RatingService
-    rating_service = RatingService(universe, user_repo, None)
-    can_chat, msg, limit, used = rating_service.can_chat_today(user_id)
-
-    if not can_chat:
-        await message.answer(msg)
-        return
-
-    # 4. Определяем тип поиска (по умолчанию normal)
-    search_type = universe.user_states.get(user_id, {}).get('search_type', 'normal')
-
-    # 5. Если премиум или админ — можно выбрать фильтр по полу
-    if user_repo.is_premium(user_id) or user_repo.is_admin(user_id):
-        # Запрашиваем тип поиска у пользователя
-        universe.user_states[user_id] = universe.user_states.get(user_id, {})
-        universe.user_states[user_id]['awaiting_search_type'] = True
-
-        await message.answer(
-            "🔍 <b>Выберите тип поиска:</b>\n\n"
-            "👥 <b>Обычный поиск</b> — все пользователи\n"
-            "👩 <b>Только девушки</b>\n"
-            "👨 <b>Только парни</b>",
-            reply_markup=get_search_type_keyboard()
-        )
-        return
-
-    # 6. Обычный поиск (без фильтра)
-    await start_search(message, user_id, 'normal')
-
-
-async def start_search(message: Message, user_id: int, search_type: str = 'normal'):
+# Ловим текстовую команду /cancel ИЛИ клик по динамической кнопке на любом языке
+# Триггер А: текстовая команда /cancel
+@search_router.message(Command("cancel"))
+# Триггер Б: клик по динамической кнопке отмены на любом языке
+@search_router.message(is_cancel_button)
+async def cmd_cancel(message: Message, search_service: SearchService, user_lang: str):
     """
-    Запускает поиск собеседника.
+    Хэндлер останавливает текущую активность пользователя (поиск, чат или ИИ).
+    Возвращает пользователя к стартовой клавиатуре "Поиск и Темы".
     """
-    universe = get_universe()  # ← без аргументов
-    user_repo = get_user_repo() # ← без аргументов
-
-    # Проверка лимитов
-    from services.rating_service import RatingService
-    rating_service = RatingService(universe, user_repo, None)
-    can_chat, msg, limit, used = rating_service.can_chat_today(user_id)
-
-    if not can_chat:
-        await message.answer(msg)
-        return
-
-    # Запоминаем тип поиска
-    if user_id not in universe.user_states:
-        universe.user_states[user_id] = {}
-    universe.user_states[user_id]['search_type'] = search_type
-
-    # Увеличиваем счётчик поисков
-    user_repo.increment_searches_count(user_id)
-
-    # Добавляем в очередь
-    universe.add_to_queue(user_id)
-
-    # Статусное сообщение
-    is_premium = user_repo.is_premium(user_id)
-
-    if is_premium:
-        status_text = (
-            f"🔍 <b>Поиск собеседника...</b>\n\n"
-            f"💎 <b>Премиум:</b> безлимит\n"
-            f"🎯 <b>Фильтр:</b> "
-        )
-        if search_type == 'girls_only':
-            status_text += "👩 только девушки\n"
-        elif search_type == 'boys_only':
-            status_text += "👨 только парни\n"
-        else:
-            status_text += "👥 все\n"
-    else:
-        remaining = limit - used
-        status_text = (
-            f"🔍 <b>Поиск собеседника...</b>\n\n"
-            f"📊 <b>Чатов на сегодня:</b> {remaining}/{limit}\n"
-        )
-        if search_type != 'normal':
-            status_text += f"🎯 <b>Фильтр:</b> {'👩 девушки' if search_type == 'girls_only' else '👨 парни'}\n"
-
-    status_text += f"👥 <b>В очереди:</b> <code>{len(universe.search_queue)}</code> чел.\n\n"
-    status_text += f"<i>Для отмены нажмите кнопку ниже</i>"
-
-    await message.answer(
-        status_text,
-        reply_markup=get_search_cancel_keyboard()
-    )
-
-    logger.info(f"Поиск начат: {user_id} | Тип: {search_type} | Очередь: {len(universe.search_queue)}")
-
-
-@router.message(lambda msg: msg.text == "🔍 Поиск собеседника")
-async def handle_search_button(message: Message):
-    """Обработка кнопки '🔍 Поиск собеседника'"""
-    await cmd_search(message)
-
-
-@router.message(lambda msg: msg.text == "❌ Отменить поиск")
-async def handle_cancel_search(message: Message):
-    """Обработка кнопки '❌ Отменить поиск'"""
     user_id = message.from_user.id
-    universe = get_universe()  # ← без аргументов
+    bot = message.bot
 
-    if user_id in universe.search_queue:
-        universe.remove_from_queue(user_id)
+    # 1. Вызываем наш сервисный метод отмены
+    result = await search_service.remove_from_queue(user_id)
+
+    logger.info(f"[INFO] (search_service.remove_from_queue) result : {result}")
+
+    # 2. РАЗБИРАЕМ ВАРИАНТЫ ОТВЕТОВ НА ОСНОВЕ РЕШЕНИЯ СЕРВИСА
+    if result:
+        # Пользователь успешно вышел из ОЗУ-очереди
         await message.answer(
-            "✅ Поиск остановлен.\n\n"
-            "👇 Используйте кнопки ниже для навигации:",
-            reply_markup=remove_keyboard()
+            get_message('search_cancel', lang=user_lang), # "❌ Поиск остановлен."
+            reply_markup=get_search_start_keyboard(user_lang)     # Возвращаем кнопки "Поиск" и "Темы"
         )
-        # Показываем главное меню
-        from handlers.start import cmd_start
-        await cmd_start(message)
+
     else:
-        await message.answer("ℹ️ Вы не в поиске.")
-
-
-@router.message(lambda msg: msg.text in ["👥 Обычный поиск", "👩 Только девушки", "👨 Только парни"])
-async def handle_search_type_selection(message: Message):
-    """Обработка выбора типа поиска (для премиум-пользователей)"""
-    user_id = message.from_user.id
-    universe = get_universe()  # ← без аргументов
-    user_repo = get_user_repo() # ← без аргументов
-
-    # Проверяем, ожидает ли пользователь выбора типа
-    user_state = universe.user_states.get(user_id, {})
-    if not user_state.get('awaiting_search_type'):
-        return
-
-    # Убираем флаг ожидания
-    universe.user_states[user_id]['awaiting_search_type'] = False
-
-    # Определяем тип поиска
-    text = message.text
-    if text == "👥 Обычный поиск":
-        search_type = 'normal'
-        await message.answer("✅ Выбран обычный поиск")
-    elif text == "👩 Только девушки":
-        search_type = 'girls_only'
-        await message.answer("✅ Поиск только среди девушек")
-    elif text == "👨 Только парни":
-        search_type = 'boys_only'
-        await message.answer("✅ Поиск только среди парней")
-    else:
-        await message.answer("❌ Отмена выбора")
-        return
-
-    # Запускаем поиск
-    await start_search(message, user_id, search_type)
+        # Защита от спама: пользователь нажал Стоп, хотя нигде не состоял
+        # Используем get_error, так как это логическое предупреждение!
+        await message.answer(
+            get_error('error_unknown', lang=user_lang),
+            reply_markup=get_search_start_keyboard(user_lang)
+        )
