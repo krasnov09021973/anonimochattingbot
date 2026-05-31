@@ -157,41 +157,12 @@ MESSAGES = {
     'search_filter_all': "👥 all",
     'search_filter_girls': "👩 girls only",
     'search_filter_boys': "👨 boys only",
-}
 
-# ========== ТЕМЫ (ключи из БД) ==========
-TOPIC_NAMES = {
-    'role_games': 'Role Games',
-    'memes': 'Memes',
-    'loneliness': 'Loneliness',
-    'games': 'Games',
-    'flirt': 'Flirt',
-    'travel': 'Travel',
-    'it': 'IT. Computers',
-    'music': 'Music',
-    'auto': 'Auto',
-    'anime': 'Anime',
-    'movies': 'Movies',
-    'pets': 'Pets',
-    'books': 'Books',
-    'sports': 'Sports',
-}
+    # ========== AI CHARACTER ==========
+    'ai_anonymous': 'Anonymous',
+    'ai_base_prompt_template': 'You are: {name}. Your age: {age} years old.\nYour traits: {traits}.\nYour communication style: {style}.\nYour rules in dialogue: {rules}.\n{extra_prompt}',
+    'ai_general_chat_rules': 'IMPORTANT SYSTEM RULE: You are currently chatting in an ANONYMOUS RANDOM CHAT about anything. Your partner DID NOT choose a specific topic. Chat like a regular, vivid, and easygoing person. Respond with short, conversational sentences (1-3 sentences), write naturally. You can smoothly mention your interests and character, but DO NOT obsess over them if the partner speaks about something else. It is strictly forbidden to say that you are an AI or a language model.\n\n',
 
-TOPIC_EMOJIS = {
-    'role_games': '🎭',
-    'memes': '😂',
-    'loneliness': '🌌',
-    'games': '🎮',
-    'flirt': '💘',
-    'travel': '✈️',
-    'it': '💻',
-    'music': '🎵',
-    'auto': '🚗',
-    'anime': '🇯🇵',
-    'movies': '🎬',
-    'pets': '🐕',
-    'books': '📚',
-    'sports': '⚽',
 }
 
 ERROR_MESSAGES = {
@@ -209,3 +180,38 @@ ERROR_MESSAGES = {
     'error_ai_error': "🤖 AI error. Please try again later.",
     'error_ai_limit': "❌ AI message limit reached.",
 }
+
+# # ========== ТЕМЫ (ключи из БД) ==========
+# TOPIC_NAMES = {
+#     'role_games': 'Role Games',
+#     'memes': 'Memes',
+#     'loneliness': 'Loneliness',
+#     'games': 'Games',
+#     'flirt': 'Flirt',
+#     'travel': 'Travel',
+#     'it': 'IT. Computers',
+#     'music': 'Music',
+#     'auto': 'Auto',
+#     'anime': 'Anime',
+#     'movies': 'Movies',
+#     'pets': 'Pets',
+#     'books': 'Books',
+#     'sports': 'Sports',
+# }
+#
+# TOPIC_EMOJIS = {
+#     'role_games': '🎭',
+#     'memes': '😂',
+#     'loneliness': '🌌',
+#     'games': '🎮',
+#     'flirt': '💘',
+#     'travel': '✈️',
+#     'it': '💻',
+#     'music': '🎵',
+#     'auto': '🚗',
+#     'anime': '🇯🇵',
+#     'movies': '🎬',
+#     'pets': '🐕',
+#     'books': '📚',
+#     'sports': '⚽',
+# }

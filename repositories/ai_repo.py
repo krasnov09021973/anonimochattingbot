@@ -20,23 +20,33 @@ class AIRepo(BaseRepo):
         # async with await self._get_connection() as db:
         db = await self._get_connection()
         # AI персонажи
+        # 1. СТАТИЧЕСКАЯ ТАБЛИЦА (Управляет структурой сущностей и фильтром пола)
         await db.execute('''
             CREATE TABLE IF NOT EXISTS ai_characters (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                gender TEXT CHECK(gender IN ('male', 'female')),
-                topic TEXT,
-                name TEXT,
-                min_age INTEGER DEFAULT 14,
+                gender TEXT NOT NULL,         -- 'male' / 'female'
+                min_age INTEGER DEFAULT 18,
                 max_age INTEGER DEFAULT 30,
-                traits TEXT,
-                style TEXT,
-                rules TEXT,
-                prompt TEXT,
-                is_active BOOLEAN DEFAULT 1,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL      -- Храним ISO-дату
+            );
         ''')
 
+        # 2. ТАБЛИЦА ЛОКАЛИЗАЦИИ (Хранит промпты, топики и имена под каждый язык)
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS ai_character_translations (
+                character_id INTEGER NOT NULL,
+                lang TEXT NOT NULL,           -- 'ru', 'en' и т.д.
+                topic TEXT NOT NULL,          -- Должно совпадать с именем в таблице topics
+                names TEXT NOT NULL,          -- JSON-массив имен: '["Алина", "Катя"]'
+                traits TEXT,                  -- Короткое описание характера
+                style TEXT,                   -- Описание манеры общения
+                rules TEXT,                   -- Правила поведения бота
+                prompt TEXT,                  -- Дополнительный системный оверрайд (если нужен)
+                PRIMARY KEY (character_id, lang),
+                FOREIGN KEY (character_id) REFERENCES ai_characters(id) ON DELETE CASCADE
+            );
+        ''')
         # AI модели
         await db.execute('''
             CREATE TABLE IF NOT EXISTS ai_models (
@@ -165,19 +175,65 @@ class AIRepo(BaseRepo):
 
     # =====================================================================
 
+    async def create_ai_session(self, chat_token: str, user_id: int, character_id: int) -> bool:
+        """
+        Создает запись о начале сессии с ИИ в таблице логов.
+        Чистый SQL инкапсулирован внутри репозитория!
+        """
+        query = """
+            INSERT INTO ai_sessions_log (chat_token, user_id, character_id, is_active, started_at)
+            VALUES (?, ?, ?, 1, datetime('now'))
+        """
+        cursor = await self._execute(query, (chat_token, user_id, character_id))
+        return cursor is not None
+
+    # =====================================================================
+
+    async def get_character_by_topic(self, topic_name: str, gender_filter: str, user_lang: str) -> list:
+        """
+        Ищет персонажей по имени темы, фильтру пола и языку пользователя через JOIN.
+        Использует базовый метод _fetch_all, возвращающий готовые dict.
+        """
+        query = """
+            SELECT c.id, c.gender, c.min_age, c.max_age,
+                   t.topic, t.names, t.traits, t.style, t.rules, t.prompt
+            FROM ai_characters c
+            JOIN ai_character_translations t ON c.id = t.character_id
+            WHERE LOWER(t.topic) = LOWER(?) AND LOWER(t.lang) = LOWER(?) AND c.is_active = 1
+        """
+        params = [topic_name, user_lang.lower()]
+
+        if gender_filter != "normal":
+            query += " AND c.gender = ?"
+            params.append(gender_filter)
+
+        # _fetch_all сам вернет список готовых словарей или пустой список [] в случае ошибки/пустоты
+        return await self._fetch_all(query, tuple(params))
+
+    async def get_all_characters(self, gender_filter: str, user_lang: str) -> list:
+        """
+        Выгребает всех доступных персонажей нужного языка для обычного случайного поиска.
+        Использует базовый метод _fetch_all.
+        """
+        query = """
+            SELECT c.id, c.gender, c.min_age, c.max_age,
+                   t.topic, t.names, t.traits, t.style, t.rules, t.prompt
+            FROM ai_characters c
+            JOIN ai_character_translations t ON c.id = t.character_id
+            WHERE LOWER(t.lang) = LOWER(?) AND c.is_active = 1
+        """
+        params = [user_lang.lower()]
+
+        if gender_filter != "normal":
+            query += " AND c.gender = ?"
+            params.append(gender_filter)
+
+        return await self._fetch_all(query, tuple(params))
+
     async def get_active_characters(self) -> List[Dict]:
         """Возвращает список активных AI персонажей"""
         query = 'SELECT * FROM ai_characters WHERE is_active = 1'
         return await self._fetch_all(query)
-
-    async def get_character_by_topic(self, topic: str, gender: str = None) -> List[Dict]:
-        """Возвращает персонажей по теме и (опционально) по полу"""
-        if gender:
-            query = 'SELECT * FROM ai_characters WHERE topic = ? AND gender = ? AND is_active = 1'
-            return await self._fetch_all(query, (topic, gender))
-        else:
-            query = 'SELECT * FROM ai_characters WHERE topic = ? AND is_active = 1'
-            return await self._fetch_all(query, (topic,))
 
     async def get_character_by_id(self, character_id: int) -> Optional[Dict]:
         """Возвращает персонажа по ID"""

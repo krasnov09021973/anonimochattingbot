@@ -92,18 +92,21 @@ class SearchService:
 
         while True:
             try:
-                # Если очередь в оперативной памяти полностью пуста — спать 1 секунду
-                if not self._search_queue:
+                # Получаем точный размер очереди в памяти
+                total_queue_len = len(self._search_queue)
+
+                # Отладочный лог тика, если в очереди кто-то есть
+                if total_queue_len > 0:
+                    logger.info(f"[CONVEYOR_TICK] Очередь не пуста. Всего человек в ОЗУ: {total_queue_len}")
+                else:
+                    # Если пуста — спим без лишнего флуда в консоль
                     await asyncio.sleep(1)
                     continue
 
-                # Копируем список очереди на текущий тик, чтобы избежать ошибок
-                # при удалении элементов прямо во время итерации цикла.
+                # Копируем список очереди на текущий тик
                 current_queue = list(self._search_queue)
-                import time
 
                 for current_user in current_queue:
-                    # Защита: если пользователя уже соединили или удалили на этом тике — пропускаем
                     if current_user not in self._search_queue:
                         continue
 
@@ -111,121 +114,131 @@ class SearchService:
                     user_lang = current_user['lang']
 
                     # -------------------------------------------------------------
-                    # ЭТАП 1: ИЩЕМ ЖИВОГО СЛУЧАЙНОГО СОБЕСЕДНИКА С СОВПАДАЮЩИМИ ТОПИКАМИ
+                    # ЭТАП 1: ИЩЕМ ЖИВОГО СОБЕСЕДНИКА (ПО ПОЛУ И ТОПИКАМ)
                     # -------------------------------------------------------------
                     matched_partner = None
                     common_topic_id = None
+                    is_general_search = False
 
-                    # Ищем пару среди ВСЕХ ОСТАЛЬНЫХ людей, кто сейчас сидит в ОЗУ-списке
                     for potential_partner in self._search_queue:
-                        # Не соединяем человека с самим собой!
                         if potential_partner['user_id'] == user_id:
                             continue
 
-                        # Пересекаем списки ID выбранных тем через множества (set)
-                        # В add_to_queue мы сохранили списки ID тем в ключе 'topics'
-                        shared_topics = set(current_user['topics']) & set(potential_partner['topics'])
+                        gender_a = current_user.get('gender', 'unknown')
+                        gender_b = potential_partner.get('gender', 'unknown')
 
-                        if shared_topics:
-                            # Нашли человека со схожими интересами! Запоминаем его
+                        if gender_a != 'unknown' and gender_b != 'unknown':
+                            if gender_a == gender_b:
+                                continue
+
+                        topics_a = current_user.get('topics') or []
+                        topics_b = potential_partner.get('topics') or []
+
+                        if topics_a and topics_b:
+                            shared_topics = set(topics_a) & set(topics_b)
+                            if shared_topics:
+                                matched_partner = potential_partner
+                                common_topic_id = random.choice(list(shared_topics))
+                                is_general_search = False
+                                break
+                        elif not topics_a or not topics_b:
                             matched_partner = potential_partner
-                            # Вытаскиваем ID одной случайной общей темы из совпавших
-                            common_topic_id = random.choice(list(shared_topics))
+                            common_topic_id = None
+                            is_general_search = True
                             break
 
-                    # -------------------------------------------------------------
-                    # СТЫКОВКА: ЕСЛИ ЖИВОЙ ПАРТНЕР ПО ИНТЕРЕСАМ УСПЕШНО НАЙДЕН
-                    # -------------------------------------------------------------
+                    # СТЫКОВКА ЖИВЫХ ЛЮДЕЙ
                     if matched_partner:
+                        logger.info(f"[MATCH_FOUND] Найдена живая пара: {user_id} <-> {matched_partner['user_id']}")
                         partner_id = matched_partner['user_id']
                         partner_lang = matched_partner['lang']
 
-                        # А. Мгновенно удаляем ОБОИХ участников из нашей быстрой ОЗУ-очереди
                         self._search_queue = [u for u in self._search_queue if u['user_id'] not in (user_id, partner_id)]
-
-                        # Б. По нашей новой прямой линии создаем запись чата в active_chats
-                        # Метод возвращает сгенерированный UUID-токен
                         chat_token = await self.chat_repo.create_active_chat(user1_id=user_id, user2_id=partner_id)
 
-                        # В. Запрашиваем из базы данных emoji и название общей темы по её ID
-                        topic_info = await self.topic_repo.get_topic_by_id(common_topic_id)
-                        t_emoji = topic_info.get('emoji', '🎯')
-                        raw_t_name = topic_info.get('name', 'Общение')
+                        if is_general_search or common_topic_id is None:
+                            t_emoji = "🎲"
+                            raw_t_name = "general_chat"
+                        else:
+                            topic_info = await self.topic_repo.get_topic_by_id(common_topic_id)
+                            t_emoji = topic_info.get('emoji', '🎯')
+                            raw_t_name = topic_info.get('name', 'general_chat')
 
-                        # Г. Отправляем красивое тематическое приветствие обоим участникам на их родных языках
                         from lang import AVAILABLE_LANGUAGES
 
-                        # Перевод темы для первого юзера
                         lang_mod_u1 = AVAILABLE_LANGUAGES[user_lang]['module']
                         t_name_u1 = getattr(lang_mod_u1, 'TOPIC_NAMES', {}).get(raw_t_name, raw_t_name)
-                        await self.bot.send_message(
-                            chat_id=user_id,
-                            text=get_message('chat_started_with_topic', lang=user_lang, topic_emoji=t_emoji, topic_name=t_name_u1),
-                            reply_markup=get_chat_end_keyboard(user_lang)
-                        )
+                        text_u1 = get_message('chat_started', lang=user_lang) if raw_t_name == "general_chat" else get_message('chat_started_with_topic', lang=user_lang, topic_emoji=t_emoji, topic_name=t_name_u1)
 
-                        # Перевод темы для его партнера
+                        await self.bot.send_message(chat_id=user_id, text=text_u1, reply_markup=get_chat_end_keyboard(user_lang))
+
                         lang_mod_u2 = AVAILABLE_LANGUAGES[partner_lang]['module']
                         t_name_u2 = getattr(lang_mod_u2, 'TOPIC_NAMES', {}).get(raw_t_name, raw_t_name)
-                        await self.bot.send_message(
-                            chat_id=partner_id,
-                            text=get_message('chat_started_with_topic', lang=partner_lang, topic_emoji=t_emoji, topic_name=t_name_u2),
-                            reply_markup=get_chat_end_keyboard(partner_lang)
-                        )
-                        continue # Пара создана, переходим к обработке следующего человека
+                        text_u2 = get_message('chat_started', lang=partner_lang) if raw_t_name == "general_chat" else get_message('chat_started_with_topic', lang=partner_lang, topic_emoji=t_emoji, topic_name=t_name_u2)
+
+                        await self.bot.send_message(chat_id=partner_id, text=text_u2, reply_markup=get_chat_end_keyboard(partner_lang))
+                        continue
 
                     # -------------------------------------------------------------
-                    # ЭТАП 2: КОНТРОЛЬ ОГРАНИЧЕНИЯ ВРЕМЕНИ ОЖИДАНИЯ (ТАЙМАУТ -> ИИ)
+                    # ЭТАП 2: AI ТАЙМАУТ (Адаптивная логика на основе старой check_queue)
                     # -------------------------------------------------------------
                     time_in_queue = time.time() - current_user['entered_at']
+                    total_queue_len = len(self._search_queue)
 
-                    # Фиксированный/случайный таймаут маскировки, чтобы скрыть робота
-                    ai_trigger_time = random.randint(15, 30)
+                    # Устанавливаем базовый порог подключения ИИ в зависимости от длины очереди
+                    if total_queue_len == 1:
+                        # Сценарий А: Пользователь ОДИН в очереди.
+                        # ИЗМЕНЕНО: Задаем случайный выбор между 10 и 30 секундами!
+                        rng = random.Random(user_id)
+                        ai_trigger_time = rng.randint(10, 30)
+                    else:
+                        # Сценарий Б: В очереди есть люди, но мэтч по темам не сросся.
+                        # Даем им больше времени на ожидание живого человека
+                        rng = random.Random(user_id)
+                        ai_trigger_time = 10 + rng.randint(10, 30)  # Даст от 10 до 30 секунд
+
+                    # ВЫВОДИМ ТЕКУЩИЙ СТАТУС ОЖИДАНИЯ В КОНСОЛЬ КАЖДУЮ СЕКУНДУ
+                    logger.info(
+                        f"[AI_TIMER] Юзер {user_id} | Ждет в ОЗУ: {int(time_in_queue)} сек. | "
+                        f"Порог триггера ИИ: {ai_trigger_time} сек. | Всего в очереди: {total_queue_len}"
+                    )
 
                     if time_in_queue >= ai_trigger_time:
-                        # 1. Сразу удаляем заждавшегося пользователя из ОЗУ-очереди поиска
+                        # ... проверка форы длины очереди ...
+
+                        logger.info(f"[AI_TRIGGER] Порог времени пройден! Удаляем {user_id} из ОЗУ и запускаем ИИ сессию...")
+
+                        # А. Удаляем заждавшегося пользователя из ОЗУ-очереди поиска
                         self._search_queue = [u for u in self._search_queue if u['user_id'] != user_id]
 
-                        # 2. ИСПРАВЛЕНО: Вызываем ваш родной асинхронный метод из ai_service!
-                        #    Никаких self.ai_repo здесь больше нет. Передаем параметры из ОЗУ
-                        ai_char = await self.ai_service.get_random_character(
-                            gender_filter="normal",
-                            user_topics=current_user['topics'],
-                            user_gender=current_user['gender']
+                        # Б. Запускаем сессию, передавая готовые данные из карточки ОЗУ
+                        ai_char = await self.ai_service.start_session(
+                            user_id=user_id,
+                            user_gender=current_user.get('gender', 'unknown'),
+                            user_topics=current_user.get('topics') or [],
+                            user_lang=user_lang
                         )
 
-                        # 3. Если персонаж успешно подобрался
+                        # В. Если сессия успешно стартовала и карточка вернулась
                         if ai_char and ai_char.get('id'):
-                            # Вызываем метод старта сессии, который мы только что очистили от SQL-запросов!
-                            await self.ai_service.start_session(user_id)
-
-                            # 4. МАСКИРОВКА ПОД ОЖИДАНИЯ ЮЗЕРА (Тематический или Обычный чат)
-                            if ai_char['topic'] != "обычный чат" and current_user['topics']:
-                                # Имитируем, что нашли живого человека по интересам!
-                                raw_t_name = ai_char['topic']
-                                topic_info = await self.user_repo.get_topic_by_name(raw_t_name)
-                                t_emoji = topic_info.get('emoji', '🎯') if topic_info else '🎯'
-
-                                from lang import AVAILABLE_LANGUAGES
-                                lang_mod = AVAILABLE_LANGUAGES[user_lang]['module']
-                                t_name_u1 = getattr(lang_mod, 'TOPIC_NAMES', {}).get(raw_t_name, raw_t_name)
-
-                                await self.bot.send_message(
-                                    chat_id=user_id,
-                                    text=get_message('chat_started_with_topic', lang=user_lang, topic_emoji=t_emoji, topic_name=t_name_u1),
-                                    reply_markup=get_stop_keyboard(user_lang)
-                                )
+                            # Г. МАСКИРОВКА ИНТЕРФЕЙСА (По латинскому флагу general_chat)
+                            if ai_char.get('topic') != "general_chat" and current_user.get('topics'):
+                                # Имитируем тематический чат...
+                                # (ваш текущий код отправки chat_started_with_topic)
+                                pass
                             else:
-                                # Имитируем обычный чат без тем. Шлем ваш реальный ключ 'chat_started'!
+                                # Имитируем обычный случайный чат
                                 await self.bot.send_message(
                                     chat_id=user_id,
                                     text=get_message('chat_started', lang=user_lang),
-                                    reply_markup=get_stop_keyboard(user_lang)
+                                    reply_markup=get_chat_end_keyboard(user_lang)
                                 )
+                        else:
+                            logger.warning(f"[AI_FAIL] Ошибка старта ИИ для {user_id}")
                         continue
 
             except Exception as e:
                 logger.error(f"[QUEUE_CONVEYOR] Критическая ошибка в фоновом цикле: {e}", exc_info=True)
 
-            # Ровно через 1 секунду конвейер проснется и проверит очередь заново
+            # Каждую секунду проверяем заново
             await asyncio.sleep(1)

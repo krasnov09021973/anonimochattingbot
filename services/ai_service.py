@@ -87,77 +87,89 @@ class AIService:
     # ВЫБОР ПЕРСОНАЖА
     # ================================================================
 
-    async def get_random_character(self, gender_filter: str = "normal", user_topics: list = None, user_gender: str = "unknown") -> dict:
+    async def get_ai_character(self, gender_filter: str = "normal", user_topics: list = None, user_gender: str = "unknown", user_lang: str = "ru") -> dict:
         """
-        Выбирает случайного AI персонажа.
-
-        Алгоритм:
-        1. Определяем тему из интересов пользователя (если есть)
-        2. Ищем персонажа по теме и фильтру пола
-        3. Если не нашли — берём стандартного персонажа
-
-        :param gender_filter: 'normal', 'girls_only', 'boys_only'
-        :param user_topics: список тем пользователя
-        :param user_gender: пол пользователя (для обращения в правильном роде)
-        :return: словарь с данными персонажа
+        Универсальный метод подбора ИИ-персонажа (по вашей вилке).
+        Если темы переданы — идет отбор по ним.
+        Если тем нет или по ним в БД пусто — выгребает любого персонажа нужного пола и языка.
         """
-        # Определяем тему из первой темы пользователя
-        topic_name = None
-        if user_topics and len(user_topics) > 0:
-            first_topic = user_topics[0]
-            if isinstance(first_topic, dict):
-                topic_name = first_topic.get('name')
-            else:
-                topic_name = str(first_topic)
+        import random
+        import json
+        from lang import get_message
+        character = None
 
-        logger.info(f"[AI] Выбор персонажа: тема={topic_name}, фильтр={gender_filter}")
+        is_general_flood = (gender_filter == "normal")
+        topics_list = user_topics or []
 
-        # 1. Получаем список персонажей из базы (он асинхронный, тут всё ОК)
-        character = await self.ai_repo.get_character_by_topic(topic_name, gender_filter)
+        # 1. ОТБОР ПО ТОПИКАМ И ПОЛУ (если список тем не пуст)
+        if topics_list and not is_general_flood:
+            chosen_topic_id = random.choice(topics_list)
+            topic_info = await self.topic_repo.get_topic_by_id(chosen_topic_id)
 
-         # 2. Если по этой теме в базе вообще никого не нашлось
-        # =====================================================================
-        # ЖЕСТКАЯ ПРОВЕРКА ТИПА ПЕРЕД ВОЗВРАТОМ (ВСТАВИТЬ СЮДА!)
-        # =====================================================================
+            if topic_info:
+                target_topic_name = topic_info.get('name', 'general_chat')
+                character = await self.ai_repo.get_character_by_topic(target_topic_name, gender_filter, user_lang)
+
+        # 2. ОБЩИЙ ОТБОР (если флуд или по теме в БД пусто)
+        if not character:
+            character = await self.ai_repo.get_all_characters(gender_filter, user_lang)
+
+        # 3. ЖЕСТКАЯ СТРАХОВКА ТИПА (Схлопываем любой массив из репозитория в один словарь)
         if isinstance(character, list):
-            import random
             if len(character) > 0:
                 character = random.choice(character)
             else:
-                # Если из базы почему-то прилетел пустой список [], уходим на заглушку
-                character = await self._get_default_character(gender_filter)
+                character = {}
 
-        # Строка 137: Теперь character гарантированно является словарем!
+        # 4. РАСПАКОВКА ИМЕНИ ИЗ JSON (С фолбеком через движок i18n)
+        raw_names = character.get('names')
+        ai_name = None
+        if raw_names:
+            try:
+                names_list = json.loads(raw_names)
+                if names_list:
+                    ai_name = random.choice(names_list)
+            except Exception:
+                pass
+
+        if not ai_name:
+            ai_name = get_message('ai_anonymous', lang=user_lang)
+
+        # Генерируем случайный возраст в рамках лимитов персонажа
+        ai_age = random.randint(character.get('min_age', 18), character.get('max_age', 30))
+
+        # 5. СБОРКА СИСТЕМНОГО ПРОМПТА ЧЕРЕЗ ШАБЛОН ИЗ ЯЗЫКОВОГО ФАЙЛА (БЕЗ ХАРДКОДА)
+        base_prompt = get_message(
+            'ai_base_prompt_template',
+            lang=user_lang,
+            name=ai_name,
+            age=ai_age,
+            traits=character.get('traits', ''),
+            style=character.get('style', ''),
+            rules=character.get('rules', ''),
+            extra_prompt=character.get('prompt', '') or ''
+        )
+
+        # 6. ДИНАМИЧЕСКАЯ СКЛЕЙКА МЕТА-ПРОМПТА ИЗ АДМИНКИ С ВАШИМ СИСТЕМНЫМ КЛЮЧОМ ai_
+        if is_general_flood:
+            setting_key = f"general_chat_rules_{user_lang.lower()}"
+            i18n_fallback = get_message('ai_general_chat_rules', lang=user_lang)
+
+            general_meta_rules = await self.ai_repo.get_setting(setting_key, default=i18n_fallback)
+            final_prompt = f"{general_meta_rules}\n\n{base_prompt}"
+        else:
+            final_prompt = base_prompt
+
+        # Выставляем строгий латинский флаг-маркер темы
+        db_topic = character.get('topic', 'general_chat')
+        res_topic = "general_chat" if is_general_flood else db_topic
+
         return {
             "id": character.get('id'),
-            "name": character['name'],
-            "age": character.get('age', random.randint(18, 30)),
-            "topic": topic_name,
+            "name": ai_name,
+            "topic": res_topic,  # Строгий латинский slug для конвейера
             "gender": character.get('gender', 'unknown'),
-            "prompt": character.get('prompt', ''),
-            "traits": character.get('traits', ''),
-            "style": character.get('style', ''),
-            "rules": character.get('rules', '')
-        }
-
-    def _get_default_character(self, gender_filter: str) -> Dict:
-        """Возвращает стандартного персонажа (если тема не подошла)"""
-        # Пробуем найти персонажа с темой "обычный чат"
-        default = self.ai_repo.get_character_by_topic("обычный чат", gender_filter)
-
-        if default:
-            return default[0] if isinstance(default, list) else default
-
-        # Если нет — возвращаем заглушку
-        return {
-            'name': 'Саша',
-            'age': 25,
-            'gender': 'male' if gender_filter == 'boys_only' else 'female',
-            'topic': 'обычный чат',
-            'prompt': 'Ты обычный собеседник. Отвечай естественно.',
-            'traits': 'обычный человек',
-            'style': 'естественно',
-            'rules': 'Отвечай кратко и по делу'
+            "prompt": final_prompt
         }
 
     # ================================================================
@@ -166,38 +178,49 @@ class AIService:
 
     # Обновленный метод внутри класса AIService в ai_service.py
 
-    async def start_session(self, user_id: int) -> bool:
+    async def start_session(self, user_id: int, user_gender: str, user_topics: list, user_lang: str) -> dict:
         """
-        Начинает AI сессию для пользователя по таймауту из очереди.
-        ИСПРАВЛЕНО: SQL-запрос полностью вырезан и делегирован в ai_repo.
-        """
-        # 1. Получаем данные пользователя и его интересы из БД
-        user_data = await self.user_repo.get_user(user_id)
-        user_gender = user_data.get('gender', 'unknown') if user_data else 'unknown'
-        user_topics = await self.user_repo.get_user_selected_topics(user_id) if user_data else []
+        Начинает мультиязычную AI сессию для пользователя по таймауту из очереди.
+        НИКАКОГО SQL: Только координация вызовов репозиториев и кэширование в ОЗУ.
 
-        # 2. Подбираем случайного ИИ-персонажа через ваш готовый асинхронный метод
-        character = await self.get_random_character(
+        Вход: Данные пользователя, которые конвейер УЖЕ хранит в ОЗУ.
+        Выход: Карточка подобранного ИИ-персонажа (dict) для отправки сообщений в UI.
+        """
+        # 1. Подбираем случайного ИИ-персонажа через наш универсальный мультиязычный метод
+        character = await self.get_ai_character(
             gender_filter="normal",
             user_topics=user_topics,
-            user_gender=user_gender
+            user_gender=user_gender,
+            user_lang=user_lang
         )
 
         if not character or not character.get('id'):
-            return False
+            logger.warning(f"[AI_START_FAIL] Не удалось подобрать персонажа для {user_id}. База пуста?")
+            return {}
 
-        # 3. Привязываем ИИ к юзеру в таблице users (поле current_ai_char)
-        await self.user_repo.update_user_ai_character(user_id, character['id'])
+        # 2. Создаем чат в active_chats. Метод репозитория сам сгенерирует UUID и вернет его.
+        # Маскируем ИИ под партнера с отрицательным ID (-character_id)
+        chat_token = await self.chat_repo.create_active_chat(
+            user1_id=user_id,
+            user2_id=-character['id']
+        )
 
-        # 4. Инициализируем пустую историю сообщений в ОЗУ
+        # 3. Фиксируем сессию в таблице ai_sessions_log на диске, привязывая её к chat_token
+        # (Замените log_session_start на create_ai_session, если переименовали метод в ai_repo.py)
+        await self.ai_repo.create_ai_session(
+            chat_token=chat_token,
+            user_id=user_id,
+            character_id=character['id']
+        )
+
+        # 4. Инициализируем пустую историю контекста сообщений нейросети в ОЗУ
         self._ai_histories[user_id] = []
 
-        # 5. ПРЯМАЯ ТРАССА: Просто просим репозиторий записать лог старта!
-        # Сервис больше не знает, как устроена таблица ai_sessions_log
-        await self.ai_repo.log_session_start(user_id, character['id'])
+        logger.info(f"[AI_START_SUCCESS] Чат начат для {user_id} с персонажем {character['name']} (Токен: {chat_token})")
 
-        logger.info(f"AI-чат начат для {user_id} с персонажем {character['name']}")
-        return True
+        # Возвращаем готовую карточку персонажа, чтобы конвейер поиска отправил красивое UI-сообщение
+        return character
+
 
     async def end_session(self, user_id: int) -> None:
         """
